@@ -1,0 +1,133 @@
+version: "3.6"
+
+services:
+  # Acting as a reverse proxy (AKA Application Gateway in Azure)
+  nginx:
+    container_name: nginx
+    image: nginx:latest
+    hostname: nginx
+    ports:
+      - 8080:80/tcp
+    volumes:
+      - ./nginx/landing.conf:/etc/nginx/conf.d/landing.conf
+
+    networks:
+      net:
+        aliases:
+          - nginx.localtest.me
+    depends_on:
+      - oauth2_proxy
+      - keycloak
+      - keycloakdb
+      - landing
+
+  # Main landing page
+  landing:
+    container_name: landing
+    image: nginx:latest
+    networks:
+      net:
+        aliases:
+          - localtest.me
+    volumes:
+      - ./landing/:/usr/share/nginx/html
+    ports:
+      - 90:80
+
+  # Redis for session store (used by oauth2_proxy)
+  redis:
+    image: redis:6.2-alpine
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --save 20 1 --loglevel warning #--requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81
+    networks:
+      net:
+        aliases:
+          - redis.localtest.me
+    volumes:
+      - redis_data:/data
+
+  # Oauth2 Authentication provider (Keycloak)
+  keycloak:
+    image: azwectrdealerhubdev.azurecr.io/core_authorization:1.21.0
+    container_name: keycloak
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloakdb.localtest.me:5432/keycloak
+      KC_DB_USERNAME: CoreServicesPSQLAdmin
+      KC_DB_PASSWORD: 0sprint3
+
+      KC_HOSTNAME: keycloak.localtest.me
+      KC_HOSTNAME_PORT: 9080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+
+      KEYCLOAK_ADMIN: ktmadmin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+
+      KC_HTTP_ENABLED: "true"
+      KC_DB_URL_PROPERTIES: "?sslmode=verify-full"
+
+      JAVA_OPTS_APPEND: >-
+        "-Djgroups.dns.query={{ include "keycloak.fullname" . }}-headless
+        -javaagent:/opt/otel/opentelemetry-javaagent.jar"
+
+      KC_LOG_LEVEL: info
+      KC_METRICS_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    command:
+      - start-dev
+      - "--http-port=9080"
+    depends_on:
+      - keycloakdb
+    ports:
+      - 9080:9080
+    networks:
+      net:
+        aliases:
+          - keycloak.localtest.me
+
+  # Postgres for Keycloak
+  keycloakdb:
+    image: postgres:15
+    container_name: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: CoreServicesPSQLAdmin
+      POSTGRES_PASSWORD: 0sprint3
+    networks:
+      net:
+        aliases:
+          - keycloakdb.localtest.me
+
+  # It retries many times till keycloak is healthy
+  oauth2_proxy:
+    image: azwectrdealerhubdev.azurecr.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: oauth2_proxy
+    command: --config /oauth2-proxy.cfg --session-store-type=redis --redis-connection-url=redis://redis.localtest.me:6379
+    hostname: oauth2_proxy
+    volumes:
+      - "./oauth2-proxy/oauth2-proxy.cfg:/oauth2-proxy.cfg"
+    ports:
+      - 4180:4180/tcp
+    depends_on:
+      - redis
+      - keycloak
+      - keycloakdb
+    restart: unless-stopped
+    networks:
+      net:
+        aliases:
+          - oauth2_proxy.localtest.me
+
+volumes:
+  postgres_data:
+  redis_data:
+    driver: local
+
+networks:
+  net: {}
